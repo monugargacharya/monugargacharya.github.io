@@ -236,6 +236,151 @@
     }
   }
 
+  /* ---------- Hero tags: scatter into free space, drag anywhere in the hero ---------- */
+  const hero = document.querySelector('.hero');
+  const tagList = hero?.querySelector('.proof');
+  if (hero && tagList) {
+    const tags = [...tagList.children];
+    const GAP = 14; // breathing room around text, the photo and other tags
+    const STEP = 8; // candidate grid resolution in px
+
+    const toHero = (r, base) => ({ x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height });
+    const overlap = (a, b) =>
+      Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) *
+      Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+    const centre = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
+
+    // Usable area: the hero above the marquee
+    const bounds = () => {
+      const base = hero.getBoundingClientRect();
+      const marquee = hero.querySelector('.marquee');
+      const bottom = marquee ? marquee.getBoundingClientRect().top - base.top : base.height;
+      return { base, w: base.width, h: bottom };
+    };
+
+    // Tight boxes around what's visible: each line of text, the pill and buttons, and the photo
+    const obstacles = (base) => {
+      const out = [];
+      const copy = hero.querySelector('.hero__copy');
+      const range = document.createRange();
+      const walker = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => (n.textContent.trim() && !n.parentElement.closest('.sr-only') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+      });
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        range.selectNodeContents(n);
+        for (const r of range.getClientRects()) if (r.width && r.height) out.push({ ...toHero(r, base), weight: 10 });
+      }
+      copy.querySelectorAll('.pill, .btn, .rotator__progress').forEach((el) => out.push({ ...toHero(el.getBoundingClientRect(), base), weight: 10 }));
+      const photo = hero.querySelector('.portrait__frame');
+      if (photo) out.push({ ...toHero(photo.getBoundingClientRect(), base), weight: 6 });
+      return out;
+    };
+
+    const place = (el, x, y) => { el.style.left = `${Math.round(x)}px`; el.style.top = `${Math.round(y)}px`; };
+
+    // Phones and tablets (single-column hero) show the tags as a fixed grid under the photo
+    const stacked = window.matchMedia('(max-width: 920px)');
+
+    // Default spots around the photo, as centre offsets from its edges, in list order:
+    // above-left, above-right, right-middle, below-left, below-right
+    const targets = (p) => [
+      { x: p.x - 80, y: p.y - 66 },
+      { x: p.x + p.w + 49, y: p.y - 63 },
+      { x: p.x + p.w + 179, y: p.y + p.h * 0.57 },
+      { x: p.x - 5, y: p.y + p.h + 109 },
+      { x: p.x + p.w + 75, y: p.y + p.h + 94 },
+    ];
+
+    // Each tag goes to its default spot, or the nearest spot that keeps clear of text, the photo and other tags
+    const layout = () => {
+      if (stacked.matches) {
+        tags.forEach((t) => delete t.dataset.moved); // start fresh if the window grows back to desktop
+        tagList.classList.add('is-placed');
+        return;
+      }
+      const { base, w: W, h: H } = bounds();
+      // Measure the copy where it ends up, not mid-way through its fade-in
+      hero.classList.add('is-measuring');
+      const blocked = obstacles(base);
+      hero.classList.remove('is-measuring');
+      const placed = [];
+      tags.filter((t) => t.dataset.moved).forEach((t) => {
+        // Keep tags the visitor has dragged, but pull them back inside if the hero shrank
+        const x = Math.min(Math.max(0, t.offsetLeft), W - t.offsetWidth);
+        const y = Math.min(Math.max(0, t.offsetTop), H - t.offsetHeight);
+        place(t, x, y);
+        placed.push({ x, y, w: t.offsetWidth, h: t.offsetHeight });
+      });
+      const photo = hero.querySelector('.portrait__frame');
+      const spots = targets(photo ? toHero(photo.getBoundingClientRect(), base) : { x: W / 2, y: H / 2, w: 0, h: 0 });
+
+      tags.forEach((t, i) => {
+        if (t.dataset.moved) return;
+        const w = t.offsetWidth;
+        const h = t.offsetHeight;
+        const goal = spots[i % spots.length];
+        let best = null;
+        for (let y = GAP; y <= H - h - GAP; y += STEP) {
+          for (let x = GAP; x <= W - w - GAP; x += STEP) {
+            const box = { x: x - GAP, y: y - GAP, w: w + GAP * 2, h: h + GAP * 2 };
+            let clash = 0;
+            for (const o of blocked) clash += overlap(box, o) * o.weight;
+            for (const p of placed) clash += overlap(box, p) * 12;
+            const c = centre({ x, y, w, h });
+            const cost = clash * 1000 + Math.hypot(c.x - goal.x, c.y - goal.y);
+            if (!best || cost < best.cost) best = { x, y, cost };
+          }
+        }
+        if (!best) return;
+        place(t, best.x, best.y);
+        placed.push({ x: best.x, y: best.y, w, h });
+      });
+      tagList.classList.add('is-placed');
+    };
+
+    // Drag with mouse, pen or touch; tags stay inside the hero
+    let front = 1;
+    tags.forEach((t) => {
+      t.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 || stacked.matches) return;
+        e.preventDefault();
+        t.setPointerCapture(e.pointerId);
+        t.classList.add('is-dragging');
+        t.style.zIndex = String(++front); // last-dragged tag stays on top
+        const startX = e.clientX - t.offsetLeft;
+        const startY = e.clientY - t.offsetTop;
+        const { w: W, h: H } = bounds();
+        const move = (ev) => {
+          const x = Math.min(Math.max(0, ev.clientX - startX), W - t.offsetWidth);
+          const y = Math.min(Math.max(0, ev.clientY - startY), H - t.offsetHeight);
+          place(t, x, y);
+        };
+        const end = () => {
+          t.classList.remove('is-dragging');
+          t.dataset.moved = '1';
+          t.removeEventListener('pointermove', move);
+          t.removeEventListener('pointerup', end);
+          t.removeEventListener('pointercancel', end);
+        };
+        t.addEventListener('pointermove', move);
+        t.addEventListener('pointerup', end);
+        t.addEventListener('pointercancel', end);
+      });
+    });
+
+    // Lay out once fonts and the hero's entrance animation have settled, and again when the width changes
+    const settle = () => setTimeout(layout, prefersReducedMotion ? 0 : 900);
+    (document.fonts?.ready ?? Promise.resolve()).then(settle);
+    let lastWidth = window.innerWidth;
+    let resizeTimer;
+    window.addEventListener('resize', () => {
+      if (window.innerWidth === lastWidth) return; // ignore mobile toolbar show/hide
+      lastWidth = window.innerWidth;
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(layout, 150);
+    });
+  }
+
   /* ---------- Durations (kept current for "Present" roles) ---------- */
   const fmtDuration = (from, to) => {
     const [fy, fm] = from.split('-').map(Number);
