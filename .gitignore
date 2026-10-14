@@ -1,0 +1,6 @@
+.claude/
+# Original photo contains GPS/EXIF metadata; only the cleaned assets/img/profile.jpg is published
+My_image.JPG
+node_modules/
+.DS_Store
+Thumbs.db
